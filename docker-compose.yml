@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "3721:3721"
+    environment:
+      - DATABASE_URL=file:/app/prisma/dev.db
+      - JWT_SECRET=wukong-travel-secret-key-2026
+      - PORT=3721
+    volumes:
+      - server_data:/app/prisma
+    restart: unless-stopped
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_TARGET=http://server:3721
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  server_data:
