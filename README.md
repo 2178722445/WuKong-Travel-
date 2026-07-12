@@ -9,7 +9,7 @@
 
 <p align="center">
   <h1 align="center">WuKong Travel · 黑神话山西取景地旅游规划平台</h1>
-  <p align="center">一个面向 <b>WebGIS 实习岗位</b> 的全栈简历项目</p>
+  <p align="center">一个面向 <b>WebGIS 岗位</b> 的全栈项目</p>
   <p align="center">Vue 3 + 高德地图 JS API + Express + Prisma + SQLite</p>
 </p>
 
