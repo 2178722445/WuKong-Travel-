@@ -1,8 +1,16 @@
-FROM node:20-alpine
+FROM python:3.12-slim
+
 WORKDIR /app
-COPY package*.json ./
-RUN npm install
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev libgeos-dev gdal-bin libgdal-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
-RUN npx prisma generate
+
 EXPOSE 3721
-CMD ["sh", "-c", "npx prisma db push && npx tsx src/seed.ts && npx tsx src/index.ts"]
+
+CMD ["sh", "-c", "flask db upgrade && python seed.py && python app.py"]

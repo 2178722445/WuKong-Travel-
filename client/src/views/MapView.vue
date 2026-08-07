@@ -1,46 +1,47 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, computed, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useLocationStore } from '../stores/locations'
 import { useToast } from '../utils/toast'
-
-declare const AMap: any
+import {
+  distanceBetween,
+  createBuffer,
+  findPointsInBuffer,
+  computeRouteLength,
+  projectCoordinate,
+  locationsToGeoJSON,
+  type LocationFeature,
+} from '../utils/spatial'
+import CesiumViewer from '../components/cesium/CesiumViewer.vue'
+import OLViewer from '../components/openlayers/OLViewer.vue'
 
 const router = useRouter()
 const locStore = useLocationStore()
 const toast = useToast()
 
-const mapContainer = ref<HTMLDivElement>()
 const selectedIdx = ref<number | null>(null)
 const searchQuery = ref('')
 const cityFilter = ref('')
 const showPanel = ref(true)
 const isLoading = ref(true)
+const mapMode = ref<'2d' | '3d'>('3d')
 
-// 统一分析面板
-const weatherData = ref<any>(null)
-const weatherLoading = ref(false)
-const routeStart = ref('')
-const routeEnd = ref('')
-const routeResult = ref<any>(null)
-const routeSteps = ref<any[]>([])
-const routeLoading = ref(false)
+// Spatial analysis
 const bufferRadius = ref(5000)
-const bufferCenter = ref('')
-const bufferPOIs = ref<any[]>([])
-const bufferPOILoading = ref(false)
-const bufferPOIType = ref('停车场')
-const expandedSection = ref<'weather' | 'route' | 'buffer' | null>(null)
+const bufferCenterId = ref<number | null>(null)
+const bufferPOIs = ref<(LocationFeature & { distance: number })[]>([])
 
-const poiTypes = ['停车场', '加油站', '餐饮', '酒店', '超市', '医院', '银行', '厕所']
-const poiTypeIcons: Record<string, string> = {
-  '停车场': '🅿️', '加油站': '⛽', '餐饮': '🍽️', '酒店': '🏨',
-  '超市': '🛒', '医院': '🏥', '银行': '🏦', '厕所': '🚻',
-}
+// Route planning
+const routeStartId = ref<number | null>(null)
+const routeEndId = ref<number | null>(null)
+const routePath = ref<{ lng: number; lat: number }[]>([])
+const routeDistance = ref<{ meters: number; kilometers: number } | null>(null)
 
-let map: any, markers: any[] = [], infoWindow: any
-let driving: any, weather: any, placeSearch: any
-let bufferCircles: any[] = [], bufferPOIMarkers: any[] = [], routeLine: any = null
+// Analysis panel
+const expandedSection = ref<'route' | 'buffer' | null>(null)
+
+const cesiumRef = shallowRef<InstanceType<typeof CesiumViewer>>()
+const olRef = shallowRef<InstanceType<typeof OLViewer>>()
 
 const cities = computed(() => [...new Set(locStore.locations.map(l => l.city))])
 
@@ -56,372 +57,148 @@ const filteredLocations = computed(() => {
   return list
 })
 
-onMounted(async () => {
-  try { await locStore.fetchLocations() } catch { toast.error('加载取景地数据失败') }
-  await waitForAMap()
-  initMap()
+const selectedLocation = computed(() => {
+  if (selectedIdx.value === null) return null
+  return locStore.locations[selectedIdx.value]
 })
 
-function waitForAMap(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let attempts = 0
-    if (typeof AMap !== 'undefined') return resolve()
-    const check = () => {
-      attempts++
-      if (typeof AMap !== 'undefined') { resolve(); return }
-      if (attempts > 100) { reject(new Error('高德地图加载超时')); return }
-      setTimeout(check, 100)
-    }
-    check()
-  })
-}
+const bufferGeometry = computed(() => {
+  if (bufferCenterId.value === null || bufferPOIs.value.length === 0) return null
+  const center = locStore.locations.find(l => l.id === bufferCenterId.value)
+  if (!center) return null
+  return createBuffer(center.lng, center.lat, bufferRadius.value).geometry
+})
 
-onUnmounted(() => { map?.destroy() })
-
-function initMap() {
-  map = new AMap.Map(mapContainer.value, {
-    zoom: 7, center: [112.0, 37.0], mapStyle: 'amap://styles/light',
-    resizeEnable: true, features: ['bg', 'road', 'building', 'point'],
-    showBuildingBlock: true, animateEnable: true,
-  })
-  AMap.plugin(['AMap.Driving', 'AMap.Weather', 'AMap.PlaceSearch', 'AMap.AutoComplete'], () => {
-    driving = new AMap.Driving({ map: map, autoFitView: true, showTraffic: false, policy: 0 })
-    weather = new AMap.Weather()
-    placeSearch = new AMap.PlaceSearch({ pageSize: 20, pageIndex: 1 })
-  })
-  infoWindow = new AMap.InfoWindow({ offset: new AMap.Pixel(0, -50), closeWhenClickMap: true })
-  addMarkers()
-  setTimeout(() => {
-    if (markers.length > 0) map.setFitView(markers, false, [80, 80, 80, 520])
-    isLoading.value = false
-  }, 600)
-  document.addEventListener('keydown', handleKeydown)
-}
-
-function handleKeydown(e: KeyboardEvent) { if (e.key === 'Escape') resetView() }
-
-function addMarkers() {
-  markers.forEach(m => m.setMap(null))
-  markers = []
-  locStore.locations.forEach((loc, i) => {
-    const m = createMarker(i)
-    m.setMap(map)
-    markers.push(m)
-  })
-}
-
-function createMarker(i: number) {
-  const loc = locStore.locations[i]
-  const isFav = locStore.favorites.includes(loc.id)
-  const isSel = selectedIdx.value === i
-  const bg = isSel ? '#ff4d4f' : '#fff'
-  const border = isSel ? '#ff4d4f' : (isFav ? '#ff4d4f' : '#d4a853')
-  const textColor = isSel ? '#fff' : (isFav ? '#ff4d4f' : '#d4a853')
-  const size = isSel ? 42 : 34
-  const content = `<div class="custom-marker" style="background:${bg};border:2.5px solid ${border};border-radius:50%;width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:${isSel ? 15 : 13}px;font-weight:700;color:${textColor};cursor:pointer;box-shadow:0 3px 14px rgba(0,0,0,.18);pointer-events:auto;transition:all 0.2s;">${i + 1}</div>`
-  const m = new AMap.Marker({ position: [loc.lng, loc.lat], content, offset: new AMap.Pixel(-size / 2, -size / 2), zIndex: isSel ? 200 : 100, extData: { index: i } })
-  m.on('click', () => onMarkerClick(i))
-  m.on('mouseover', () => {
-    if (selectedIdx.value !== i) {
-      m.setContent(`<div class="custom-marker" style="background:${isFav ? '#ff4d4f' : '#d4a853'};border:2.5px solid ${isFav ? '#ff4d4f' : '#d4a853'};border-radius:50%;width:42px;height:42px;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;cursor:pointer;box-shadow:0 4px 18px rgba(0,0,0,.3);pointer-events:auto;">${i + 1}</div>`)
-    }
-  })
-  m.on('mouseout', () => {
-    if (selectedIdx.value !== i) {
-      m.setContent(`<div class="custom-marker" style="background:#fff;border:2.5px solid ${isFav ? '#ff4d4f' : '#d4a853'};border-radius:50%;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:${isFav ? '#ff4d4f' : '#d4a853'};cursor:pointer;box-shadow:0 3px 14px rgba(0,0,0,.18);pointer-events:auto;">${i + 1}</div>`)
-    }
-  })
-  return m
-}
-
-function onMarkerClick(idx: number) { selectLocation(idx); openInfoWindow(idx) }
-
-function openInfoWindow(idx: number) {
-  const loc = locStore.locations[idx]
-  const isFav = locStore.favorites.includes(loc.id)
-  const tagsHtml = loc.tags.map((t: string) => `<span style="font-size:13px;padding:4px 12px;border-radius:6px;background:#faf6ed;color:#d4a853;font-weight:500;margin-right:8px;">${t}</span>`).join('')
-  infoWindow.setContent(`
-    <div style="padding:10px;min-width:300px;font-family:-apple-system,sans-serif;">
-      <h4 style="font-size:17px;font-weight:700;margin:0 0 8px;color:#1f1f1f;">${loc.name}</h4>
-      <p style="font-size:14px;color:#999;margin:0 0 10px;">${loc.city} ${loc.district}</p>
-      <div style="margin-bottom:12px;">${tagsHtml}</div>
-      <p style="font-size:14px;color:#666;margin:0 0 14px;line-height:1.8;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${loc.description.slice(0, 100)}...</p>
-      <div style="display:flex;gap:10px;">
-        <button onclick="window._wkViewDetail(${loc.id})" style="padding:8px 20px;background:#1677ff;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;font-weight:500;">查看详情</button>
-        <button onclick="window._wkToggleFav(${loc.id})" style="padding:8px 18px;background:#fff;border:1px solid ${isFav ? '#ff4d4f' : '#e5e7eb'};border-radius:8px;font-size:14px;cursor:pointer;color:${isFav ? '#ff4d4f' : '#666'};">${isFav ? '已收藏' : '收藏'}</button>
-      </div>
-    </div>`)
-  infoWindow.open(map, markers[idx].getPosition())
-}
-
-declare global { interface Window { _wkViewDetail: (id: number) => void; _wkToggleFav: (id: number) => void; _wkRouteToPOI: (name: string) => void } }
-window._wkViewDetail = (id: number) => router.push(`/location/${id}`)
-window._wkToggleFav = async (id: number) => {
-  await locStore.toggleFavorite(id)
-  updateMarkers()
-  const idx = locStore.locations.findIndex(l => l.id === id)
-  if (idx >= 0 && selectedIdx.value === idx) openInfoWindow(idx)
-  toast.success(locStore.favorites.includes(id) ? '已加入收藏' : '已取消收藏')
-}
-window._wkRouteToPOI = (name: string) => {
-  const poi = bufferPOIs.value.find(p => p.name === name)
-  if (poi) planRouteToPOI(poi)
-}
+onMounted(async () => {
+  try {
+    await locStore.fetchLocations()
+  } catch {
+    toast.error('加载取景地数据失败')
+  }
+  isLoading.value = false
+})
 
 function selectLocation(idx: number) {
   selectedIdx.value = idx
-  map.setZoomAndCenter(14, [locStore.locations[idx].lng, locStore.locations[idx].lat], false, 400)
-  expandedSection.value = 'weather'
-  updateMarkers()
-  queryWeather()
 }
 
-function updateMarkers() {
-  markers.forEach((m, i) => {
-    const oldM = m as any
-    const isSel = i === selectedIdx.value
-    const isFav = locStore.favorites.includes(locStore.locations[i].id)
-    const bg = isSel ? '#ff4d4f' : '#fff'
-    const border = isSel ? '#ff4d4f' : (isFav ? '#ff4d4f' : '#d4a853')
-    const textColor = isSel ? '#fff' : (isFav ? '#ff4d4f' : '#d4a853')
-    const size = isSel ? 46 : 38
-    oldM.setContent(`<div class="custom-marker" style="background:${bg};border:3px solid ${border};border-radius:50%;width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;font-size:${isSel ? 16 : 14}px;font-weight:700;color:${textColor};cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.2);pointer-events:auto;">${i + 1}</div>`)
-    oldM.setzIndex(isSel ? 200 : 100)
-  })
+function onMarkerSelect(id: number) {
+  const idx = locStore.locations.findIndex(l => l.id === id)
+  if (idx >= 0) selectLocation(idx)
 }
 
-function fitAll() { map.setFitView(markers, false, [80, 80, 80, 520]) }
+function onViewDetail(id: number) {
+  router.push(`/location/${id}`)
+}
+
+function toggleFav(id: number) {
+  locStore.toggleFavorite(id)
+}
+
+function fitAll() {
+  if (mapMode.value === '3d' && cesiumRef.value?.viewer) {
+    cesiumRef.value.viewer.zoomTo(cesiumRef.value.viewer.entities)
+  }
+}
+
 function resetView() {
-  selectedIdx.value = null; weatherData.value = null
+  selectedIdx.value = null
+  clearRoute()
+  clearBuffer()
   expandedSection.value = null
-  if (infoWindow) infoWindow.close()
-  clearRoute(); clearBuffer()
-  map.setZoomAndCenter(7, [112.0, 37.0]); updateMarkers()
 }
 
 function onSearch() {
-  isLoading.value = true
-  locStore.fetchLocations({ search: searchQuery.value || undefined, city: cityFilter.value || undefined }).then(() => {
-    addMarkers()
-    if (markers.length > 0) map.setFitView(markers, false, [80, 80, 80, 520])
-    else toast.info('未找到匹配的取景地')
-  }).catch(() => toast.error('搜索失败')).finally(() => isLoading.value = false)
+  locStore.fetchLocations({ search: searchQuery.value || undefined, city: cityFilter.value || undefined })
 }
 
-function toggleFavPanel(id: number) { locStore.toggleFavorite(id); updateMarkers() }
-
-// ========== 天气查询 ==========
-async function queryWeather() {
-  if (selectedIdx.value === null) return
-  weatherLoading.value = true
-  const loc = locStore.locations[selectedIdx.value]
-  try {
-    weather.getLive(loc.city, (err: any, data: any) => {
-      weatherLoading.value = false
-      if (err) { weatherData.value = null; return }
-      weatherData.value = {
-        city: data.city, weather: data.weather, temperature: data.temperature,
-        windDirection: data.windDirection, windPower: data.windPower,
-        humidity: data.humidity, reportTime: data.reportTime
-      }
-    })
-  } catch { weatherLoading.value = false }
-}
-
-// ========== 路径规划 ==========
-async function planRoute() {
-  if (!routeStart.value || !routeEnd.value) { toast.info('请输入起点和终点'); return }
-  if (!driving) { toast.error('路径规划服务未就绪，请稍后重试'); return }
-  routeLoading.value = true
-  routeResult.value = null
-  routeSteps.value = []
-  clearRoute()
-  driving.search(
-    [{ keyword: routeStart.value }, { keyword: routeEnd.value }],
-    { policy: 0, extensions: 'all' },
-    (status: string, result: any) => {
-      routeLoading.value = false
-      if (status === 'complete') {
-        if (result.routes && result.routes.length > 0) {
-          routeResult.value = result
-          const route = result.routes[0]
-          const steps = route.steps || []
-          routeSteps.value = steps.map((s: any) => ({
-            instruction: s.instruction,
-            road: s.road,
-            distance: s.distance,
-            time: s.time,
-          }))
-          if (route.policy) {
-            route._policy = route.policy
-          }
-          map.setFitView([], false, [80, 80, 80, 520])
-          toast.success(`路径规划完成，共 ${(route.distance / 1000).toFixed(1)}km`)
-        } else {
-          toast.error('未找到可行路线，请检查地址是否正确')
-        }
-      } else {
-        if (result && result.info) {
-          toast.error(`路径规划失败：${result.info}`)
-        } else {
-          toast.error('路径规划失败，请检查地址是否正确')
-        }
-      }
-    }
-  )
-}
-
-function clearRoute() {
-  if (driving) driving.clear()
-  routeResult.value = null
-  routeSteps.value = []
-}
-
-function useSelectedAsStart() {
-  if (selectedIdx.value !== null) {
-    const loc = locStore.locations[selectedIdx.value]
-    routeStart.value = `${loc.city}${loc.district}${loc.name}`
-  }
-}
-function useSelectedAsEnd() {
-  if (selectedIdx.value !== null) {
-    const loc = locStore.locations[selectedIdx.value]
-    routeEnd.value = `${loc.city}${loc.district}${loc.name}`
-  }
-}
-
-// ========== 缓冲区分析 ==========
+// ========== Buffer Analysis (Turf.js) ==========
 function drawBuffer() {
-  clearBuffer()
-  const center = bufferCenter.value
-  if (!center) { toast.info('请输入缓冲区中心点地址'); return }
-  const geocoder = new AMap.Geocoder()
-  geocoder.getLocation(center, (status: string, result: any) => {
-    if (status === 'complete' && result.geocodes.length > 0) {
-      const pos = result.geocodes[0].location
-      const circle = new AMap.Circle({
-        center: [pos.lng, pos.lat],
-        radius: bufferRadius.value,
-        strokeColor: '#1677ff', strokeWeight: 3, strokeOpacity: 0.8,
-        fillColor: '#1677ff', fillOpacity: 0.12, zIndex: 10,
-      })
-      circle.setMap(map)
-      bufferCircles.push(circle)
-      map.setFitView([circle], false, [80, 80, 80, 520])
-      searchBufferPOIs(pos.lng, pos.lat)
-      toast.success(`缓冲区已生成，半径 ${(bufferRadius.value / 1000).toFixed(1)}km`)
-    } else {
-      toast.error('地址解析失败，请检查输入')
-    }
-  })
-}
-
-function searchBufferPOIs(lng: number, lat: number) {
-  if (!placeSearch) {
-    placeSearch = new AMap.PlaceSearch({ pageSize: 20, pageIndex: 1 })
+  if (bufferCenterId.value === null) {
+    toast.info('请先选择一个取景地作为缓冲区中心')
+    return
   }
-  bufferPOILoading.value = true
-  bufferPOIs.value = []
-  clearPOIMarkers()
-  const keyword = bufferPOIType.value
-  const radius = bufferRadius.value
-  placeSearch.searchNearBy(keyword, [lng, lat], radius, (status: string, result: any) => {
-    bufferPOILoading.value = false
-    if (status === 'complete' && result.poiList) {
-      bufferPOIs.value = result.poiList.pois.map((p: any) => ({
-        name: p.name, address: p.address, location: p.location,
-        distance: p.distance, type: p.type, tel: p.tel,
-      }))
-      addPOIMarkers()
-      if (bufferPOIs.value.length === 0) {
-        toast.info(`未找到周边${keyword}`)
-      } else {
-        toast.success(`找到 ${bufferPOIs.value.length} 个${keyword}`)
-      }
-    } else {
-      toast.info(`搜索${keyword}失败，请重试`)
-    }
-  })
-}
+  clearBuffer()
+  const center = locStore.locations.find(l => l.id === bufferCenterId.value)
+  if (!center) return
 
-function addPOIMarkers() {
-  clearPOIMarkers()
-  bufferPOIs.value.forEach((poi) => {
-    const iconMap: Record<string, string> = {
-      '停车场': '🅿️', '加油站': '⛽', '餐饮': '🍽️', '酒店': '🏨',
-      '超市': '🛒', '医院': '🏥', '银行': '🏦', '厕所': '🚻',
-    }
-    const icon = iconMap[bufferPOIType.value] || '📍'
-    const marker = new AMap.Marker({
-      position: [poi.location.lng, poi.location.lat],
-      content: `<div style="background:#fff;border:2px solid #1677ff;border-radius:8px;padding:3px 8px;font-size:14px;display:flex;align-items:center;gap:4px;box-shadow:0 2px 10px rgba(0,0,0,.15);cursor:pointer;white-space:nowrap;"><span style="font-size:16px;">${icon}</span><span style="font-size:12px;color:#1677ff;font-weight:500;">${poi.name.length > 8 ? poi.name.slice(0, 8) + '..' : poi.name}</span></div>`,
-      offset: new AMap.Pixel(-35, -20),
-      zIndex: 80,
-    })
-    marker.on('click', () => {
-      infoWindow.setContent(`
-        <div style="padding:10px;font-family:-apple-system,sans-serif;min-width:240px;">
-          <h4 style="font-size:15px;font-weight:700;margin:0 0 6px;color:#1f1f1f;">${poi.name}</h4>
-          <p style="font-size:13px;color:#999;margin:0 0 6px;">${poi.address || '暂无地址'}</p>
-          ${poi.tel ? `<p style="font-size:13px;color:#666;margin:0 0 6px;">📞 ${poi.tel}</p>` : ''}
-          <p style="font-size:13px;color:#1677ff;margin:0 0 10px;">距离中心 ${poi.distance ? poi.distance + 'm' : '未知'}</p>
-          <button onclick="window._wkRouteToPOI('${poi.name}')" style="padding:7px 18px;background:#1677ff;color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;font-weight:500;">🧭 导航到此</button>
-        </div>`)
-      infoWindow.open(map, marker.getPosition())
-    })
-    marker.setMap(map)
-    bufferPOIMarkers.push(marker)
-  })
-}
+  const locationFeatures: LocationFeature[] = locStore.locations
+    .filter(l => l.id !== bufferCenterId.value)
+    .map(l => ({ id: l.id, name: l.name, lng: l.lng, lat: l.lat }))
 
-function clearPOIMarkers() {
-  bufferPOIMarkers.forEach(m => m.setMap(null))
-  bufferPOIMarkers = []
+  bufferPOIs.value = findPointsInBuffer(center.lng, center.lat, bufferRadius.value, locationFeatures)
+  toast.success(`缓冲区半径 ${(bufferRadius.value / 1000).toFixed(1)}km，包含 ${bufferPOIs.value.length} 个取景地`)
 }
 
 function clearBuffer() {
-  bufferCircles.forEach(c => c.setMap(null))
-  bufferCircles = []
-  clearPOIMarkers()
   bufferPOIs.value = []
+  bufferCenterId.value = null
 }
 
-function onBufferCenterChange() {
-  if (bufferCircles.length > 0 && bufferCenter.value) {
-    drawBuffer()
+// ========== Route Planning (Turf.js) ==========
+import { computeOptimalPath } from '../utils/spatial'
+
+function planRoute() {
+  if (routeStartId.value === null || routeEndId.value === null) {
+    toast.info('请选择起点和终点')
+    return
   }
+  const startLoc = locStore.locations.find(l => l.id === routeStartId.value)
+  const endLoc = locStore.locations.find(l => l.id === routeEndId.value)
+  if (!startLoc || !endLoc) return
+
+  const waypoints: LocationFeature[] = locStore.locations
+    .filter(l => l.id !== routeStartId.value && l.id !== routeEndId.value)
+    .map(l => ({ id: l.id, name: l.name, lng: l.lng, lat: l.lat }))
+
+  const line = computeOptimalPath(startLoc.lng, startLoc.lat, endLoc.lng, endLoc.lat, waypoints)
+  const coords = line.geometry.coordinates.map((c: any) => ({ lng: c[0], lat: c[1] }))
+  routePath.value = coords
+  routeDistance.value = computeRouteLength(line)
+  toast.success(`路径规划完成，全程 ${routeDistance.value!.kilometers}km`)
 }
 
-function planRouteToPOI(poi: any) {
-  const center = bufferCenter.value
-  if (!center) { toast.info('请先选择缓冲区中心点'); return }
-  routeStart.value = center
-  routeEnd.value = poi.name
-  expandedSection.value = 'route'
-  planRoute()
+function clearRoute() {
+  routePath.value = []
+  routeDistance.value = null
 }
 
-function onPOITypeChange() {
-  if (bufferCircles.length > 0 && bufferCenter.value) {
-    const geocoder = new AMap.Geocoder()
-    geocoder.getLocation(bufferCenter.value, (_status: string, result: any) => {
-      if (result?.geocodes?.length > 0) {
-        const pos = result.geocodes[0].location
-        searchBufferPOIs(pos.lng, pos.lat)
-      }
-    })
-  }
-}
-
-function toggleSection(section: 'weather' | 'route' | 'buffer') {
+function toggleSection(section: 'route' | 'buffer') {
   expandedSection.value = expandedSection.value === section ? null : section
 }
 </script>
 
 <template>
   <div class="map-page">
-    <div ref="mapContainer" class="map-container"></div>
+    <!-- Map Container -->
+    <div class="map-container">
+      <CesiumViewer
+        v-if="mapMode === '3d'"
+        ref="cesiumRef"
+        :locations="locStore.locations"
+        :selected-location-id="selectedLocation?.id ?? null"
+        @select-location="onMarkerSelect"
+        @view-detail="onViewDetail"
+      />
+      <OLViewer
+        v-else
+        ref="olRef"
+        :locations="locStore.locations"
+        :selected-location-id="selectedLocation?.id ?? null"
+        :route-path="routePath"
+        :buffer-geometry="bufferGeometry"
+        @select-location="onMarkerSelect"
+        @view-detail="onViewDetail"
+      />
 
+      <!-- Map Mode Toggle -->
+      <div class="map-mode-toggle">
+        <button :class="{ active: mapMode === '3d' }" @click="mapMode = '3d'" title="3D Cesium 视图">🌐 3D</button>
+        <button :class="{ active: mapMode === '2d' }" @click="mapMode = '2d'" title="2D OpenLayers 视图">🗺️ 2D</button>
+      </div>
+    </div>
+
+    <!-- Loading -->
     <div v-if="isLoading" class="loading-overlay">
       <div class="loading-spinner">
         <div class="spinner-ring"></div>
@@ -429,7 +206,7 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
       </div>
     </div>
 
-    <!-- 左侧搜索面板 -->
+    <!-- Left Search Panel -->
     <div class="search-panel">
       <div class="search-box">
         <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -446,7 +223,7 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
         <div
           v-for="(loc, i) in filteredLocations"
           :key="loc.id"
-          @click="onMarkerClick(i)"
+          @click="selectLocation(i)"
           class="loc-item"
           :class="{ active: selectedIdx === i }"
         >
@@ -460,217 +237,175 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
       </div>
     </div>
 
-    <!-- 统一分析面板（右侧） -->
+    <!-- Analysis Panel -->
     <div class="analysis-panel" :class="{ visible: showPanel }">
       <div class="analysis-header">
-        <h3>分析工具</h3>
-        <div class="analysis-header-actions">
-          <button v-if="selectedIdx !== null" @click="expandedSection = 'weather'; queryWeather()" class="header-action-btn" title="刷新天气">🔄</button>
-          <button @click="showPanel = false" class="panel-close-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          </button>
-        </div>
+        <h3>空间分析 (Turf.js)</h3>
+        <button @click="showPanel = false" class="panel-close-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
 
       <div class="analysis-body">
-        <!-- 天气模块 -->
-        <div class="analysis-section">
-          <div class="section-header" @click="toggleSection('weather')">
-            <div class="section-title">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>
-              <span>实时天气</span>
-              <span v-if="weatherData" class="section-badge">{{ weatherData.temperature }}°</span>
-            </div>
-            <svg class="section-arrow" :class="{ open: expandedSection === 'weather' }" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-          </div>
-          <div v-if="expandedSection === 'weather'" class="section-content">
-            <div v-if="weatherLoading" class="section-loading">查询中...</div>
-            <div v-else-if="weatherData" class="weather-card">
-              <div class="weather-city">{{ weatherData.city }}</div>
-              <div class="weather-main">
-                <span class="weather-temp">{{ weatherData.temperature }}°</span>
-                <span class="weather-desc">{{ weatherData.weather }}</span>
-              </div>
-              <div class="weather-details">
-                <div class="weather-detail-item"><span>风向</span><strong>{{ weatherData.windDirection }}</strong></div>
-                <div class="weather-detail-item"><span>风力</span><strong>{{ weatherData.windPower }}级</strong></div>
-                <div class="weather-detail-item"><span>湿度</span><strong>{{ weatherData.humidity }}%</strong></div>
-              </div>
-              <div class="weather-time">{{ weatherData.reportTime }}</div>
-            </div>
-            <div v-else class="section-empty">请先选择一个取景地</div>
-          </div>
-        </div>
-
-        <!-- 路径规划模块 -->
+        <!-- Route Planning -->
         <div class="analysis-section">
           <div class="section-header" @click="toggleSection('route')">
             <div class="section-title">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              <span>路径规划</span>
-              <span v-if="routeResult" class="section-badge green">{{ (routeResult.routes[0].distance / 1000).toFixed(1) }}km</span>
+              <span>路径规划 (Turf.js)</span>
+              <span v-if="routeDistance" class="section-badge green">{{ routeDistance.kilometers }}km</span>
             </div>
             <svg class="section-arrow" :class="{ open: expandedSection === 'route' }" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
           <div v-if="expandedSection === 'route'" class="section-content">
             <div class="field-group">
-              <label>起点</label>
-              <div class="field-row">
-                <input v-model="routeStart" placeholder="输入起点地址" class="field-input">
-                <button @click="useSelectedAsStart" class="pick-btn" title="使用当前选中取景地">📍</button>
-              </div>
+              <label>起点取景地</label>
+              <select v-model="routeStartId" class="field-select">
+                <option :value="null">-- 选择起点 --</option>
+                <option v-for="loc in locStore.locations" :key="loc.id" :value="loc.id">{{ loc.name }}</option>
+              </select>
             </div>
             <div class="field-group">
-              <label>终点</label>
-              <div class="field-row">
-                <input v-model="routeEnd" placeholder="输入终点地址" class="field-input">
-                <button @click="useSelectedAsEnd" class="pick-btn" title="使用当前选中取景地">📍</button>
-              </div>
+              <label>终点取景地</label>
+              <select v-model="routeEndId" class="field-select">
+                <option :value="null">-- 选择终点 --</option>
+                <option v-for="loc in locStore.locations" :key="loc.id" :value="loc.id">{{ loc.name }}</option>
+              </select>
             </div>
             <div class="section-actions">
-              <button @click="planRoute" class="btn-primary" :disabled="routeLoading">
-                {{ routeLoading ? '规划中...' : '开始规划' }}
-              </button>
-              <button v-if="routeResult" @click="clearRoute" class="btn-ghost">清除路线</button>
+              <button @click="planRoute" class="btn-primary">开始规划</button>
+              <button v-if="routePath.length > 0" @click="clearRoute" class="btn-ghost">清除路线</button>
             </div>
-            <div v-if="routeResult" class="route-result">
+            <div v-if="routeDistance" class="route-result">
               <div class="route-summary">
-                <span class="route-stat">📏 {{ (routeResult.routes[0].distance / 1000).toFixed(1) }} km</span>
-                <span class="route-stat">⏱ {{ Math.round(routeResult.routes[0].time / 60) }} 分钟</span>
-                <span v-if="routeResult.routes[0].tolls" class="route-stat">💰 {{ routeResult.routes[0].tolls }}元</span>
-              </div>
-              <div class="route-steps">
-                <div v-for="(step, si) in routeSteps.slice(0, 20)" :key="si" class="route-step">
-                  <span class="step-num">{{ si + 1 }}</span>
-                  <span class="step-text">{{ step.instruction }}</span>
-                </div>
-                <div v-if="routeSteps.length > 20" class="step-more">... 还有 {{ routeSteps.length - 20 }} 步</div>
+                <span class="route-stat">📏 {{ routeDistance.kilometers }} km</span>
+                <span class="route-stat">📍 {{ routePath.length }} 个节点</span>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 缓冲区分析模块 -->
+        <!-- Buffer Analysis -->
         <div class="analysis-section">
           <div class="section-header" @click="toggleSection('buffer')">
             <div class="section-title">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
-              <span>缓冲区分析</span>
-              <span v-if="bufferPOIs.length > 0" class="section-badge">{{ bufferPOIs.length }}个POI</span>
+              <span>缓冲区分析 (Turf.js)</span>
+              <span v-if="bufferPOIs.length > 0" class="section-badge">{{ bufferPOIs.length }}个</span>
             </div>
             <svg class="section-arrow" :class="{ open: expandedSection === 'buffer' }" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
           <div v-if="expandedSection === 'buffer'" class="section-content">
             <div class="field-group">
-              <label>中心点</label>
-              <select v-model="bufferCenter" class="field-select" @change="onBufferCenterChange">
-                <option value="">-- 选择取景地 --</option>
-                <option v-for="loc in locStore.locations" :key="loc.id" :value="loc.city + loc.district + loc.name">
-                  {{ loc.name }}（{{ loc.city }}{{ loc.district }}）
-                </option>
+              <label>中心点取景地</label>
+              <select v-model="bufferCenterId" class="field-select">
+                <option :value="null">-- 选择取景地 --</option>
+                <option v-for="loc in locStore.locations" :key="loc.id" :value="loc.id">{{ loc.name }}</option>
               </select>
-              <input v-model="bufferCenter" placeholder="或手动输入地址" class="field-input" style="margin-top:8px;">
             </div>
             <div class="field-group">
               <label>缓冲区半径</label>
               <div class="slider-row">
-                <input type="range" v-model.number="bufferRadius" min="500" max="50000" step="500" class="range-slider">
-                <span class="slider-value">{{ (bufferRadius / 1000).toFixed(1) }} km</span>
+                <input type="range" v-model.number="bufferRadius" min="5000" max="200000" step="5000" class="range-slider">
+                <span class="slider-value">{{ (bufferRadius / 1000).toFixed(0) }} km</span>
               </div>
-            </div>
-            <div class="field-group">
-              <label>搜索周边 POI 类型</label>
-              <select v-model="bufferPOIType" @change="onPOITypeChange" class="field-select">
-                <option v-for="t in poiTypes" :key="t" :value="t">{{ t }}</option>
-              </select>
             </div>
             <div class="section-actions">
               <button @click="drawBuffer" class="btn-primary">生成缓冲区</button>
-              <button v-if="bufferCircles.length > 0" @click="clearBuffer" class="btn-ghost">清除</button>
+              <button v-if="bufferPOIs.length > 0" @click="clearBuffer" class="btn-ghost">清除</button>
             </div>
-            <div v-if="bufferPOILoading" class="section-loading">🔍 搜索 POI 中...</div>
             <div v-if="bufferPOIs.length > 0" class="poi-list">
-              <div class="poi-list-header">周边 {{ bufferPOIType }}（{{ bufferPOIs.length }}）</div>
-              <div v-for="(poi, pi) in bufferPOIs.slice(0, 20)" :key="pi" class="poi-item">
-                <span class="poi-icon">{{ poiTypeIcons[bufferPOIType] || '📍' }}</span>
+              <div class="poi-list-header">缓冲区内取景地（{{ bufferPOIs.length }}）</div>
+              <div v-for="poi in bufferPOIs" :key="poi.id" class="poi-item">
+                <span class="poi-dot"></span>
                 <div class="poi-info">
                   <div class="poi-name">{{ poi.name }}</div>
-                  <div class="poi-addr">{{ poi.address || '暂无地址' }}</div>
                 </div>
-                <span v-if="poi.distance" class="poi-dist">{{ poi.distance }}m</span>
-                <button @click="planRouteToPOI(poi)" class="poi-route-btn" title="导航到此">🧭</button>
+                <span class="poi-dist">{{ (poi.distance! / 1000).toFixed(1) }}km</span>
+                <button @click="onMarkerSelect(poi.id)" class="poi-route-btn" title="定位">📍</button>
               </div>
-              <div v-if="bufferPOIs.length > 20" class="poi-more">还有 {{ bufferPOIs.length - 20 }} 个未显示...</div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- 详情面板 -->
-    <div class="detail-panel" :class="{ open: showPanel }">
+    <!-- Detail Panel -->
+    <div class="detail-panel" :class="{ open: showPanel && selectedLocation }">
       <div class="panel-header">
         <h3>取景地详情</h3>
         <button @click="showPanel = false" class="panel-close">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
-      <div class="panel-body" v-if="selectedIdx !== null && locStore.locations[selectedIdx]">
+      <div class="panel-body" v-if="selectedLocation">
         <div class="panel-hero">
-          <h2 class="panel-loc-name">{{ locStore.locations[selectedIdx].name }}</h2>
-          <p class="panel-loc-addr">{{ locStore.locations[selectedIdx].city }} {{ locStore.locations[selectedIdx].district }}</p>
+          <h2 class="panel-loc-name">{{ selectedLocation.name }}</h2>
+          <p class="panel-loc-addr">{{ selectedLocation.city }} {{ selectedLocation.district }}</p>
+          <p class="panel-coords">经度: {{ selectedLocation.lng.toFixed(4) }} 纬度: {{ selectedLocation.lat.toFixed(4) }}</p>
           <div class="panel-tags">
-            <span v-for="t in locStore.locations[selectedIdx].tags" :key="t" class="panel-tag">{{ t }}</span>
+            <span v-for="t in selectedLocation.tags" :key="t" class="panel-tag">{{ t }}</span>
           </div>
         </div>
         <div class="panel-info-grid">
-          <div class="panel-info-item"><label>年代</label><span>{{ locStore.locations[selectedIdx].period }}</span></div>
-          <div class="panel-info-item"><label>门票</label><span>{{ locStore.locations[selectedIdx].ticket }}</span></div>
-          <div class="panel-info-item"><label>开放时间</label><span>{{ locStore.locations[selectedIdx].hours }}</span></div>
+          <div class="panel-info-item"><label>年代</label><span>{{ selectedLocation.period }}</span></div>
+          <div class="panel-info-item"><label>门票</label><span>{{ selectedLocation.ticket }}</span></div>
+          <div class="panel-info-item"><label>开放时间</label><span>{{ selectedLocation.hours }}</span></div>
         </div>
         <div class="panel-section">
           <h4 class="panel-section-title">简介</h4>
-          <p class="panel-section-text">{{ locStore.locations[selectedIdx].description }}</p>
+          <p class="panel-section-text">{{ selectedLocation.description }}</p>
         </div>
         <div class="panel-section">
           <h4 class="panel-section-title">看点</h4>
-          <p class="panel-section-text">{{ locStore.locations[selectedIdx].highlight }}</p>
+          <p class="panel-section-text">{{ selectedLocation.highlight }}</p>
         </div>
         <div class="panel-actions">
-          <button @click="router.push(`/location/${locStore.locations[selectedIdx].id}`)" class="btn-primary">查看完整详情</button>
-          <button @click="toggleFavPanel(locStore.locations[selectedIdx].id)" class="btn-outline" :class="{ danger: locStore.favorites.includes(locStore.locations[selectedIdx].id) }">
-            <svg width="16" height="16" viewBox="0 0 24 24" :fill="locStore.favorites.includes(locStore.locations[selectedIdx].id) ? '#ff4d4f' : 'none'" :stroke="locStore.favorites.includes(locStore.locations[selectedIdx].id) ? '#ff4d4f' : 'currentColor'" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-            {{ locStore.favorites.includes(locStore.locations[selectedIdx].id) ? '已收藏' : '收藏' }}
+          <button @click="router.push(`/location/${selectedLocation.id}`)" class="btn-primary">查看完整详情</button>
+          <button @click="toggleFav(selectedLocation.id)" class="btn-outline" :class="{ danger: locStore.favorites.includes(selectedLocation.id) }">
+            <svg width="16" height="16" viewBox="0 0 24 24" :fill="locStore.favorites.includes(selectedLocation.id) ? '#ff4d4f' : 'none'" :stroke="locStore.favorites.includes(selectedLocation.id) ? '#ff4d4f' : 'currentColor'" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+            {{ locStore.favorites.includes(selectedLocation.id) ? '已收藏' : '收藏' }}
           </button>
         </div>
       </div>
     </div>
 
-    <!-- 地图控件 -->
+    <!-- Map Controls -->
     <div class="map-controls">
       <button @click="showPanel = !showPanel" :title="showPanel ? '隐藏分析面板' : '显示分析面板'">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
       </button>
       <button @click="fitAll" title="显示全部"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="12" y1="8" x2="12" y2="16"/></svg></button>
       <button @click="resetView" title="重置视图"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
-      <button @click="map?.zoomIn()" title="放大"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
-      <button @click="map?.zoomOut()" title="缩小"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg></button>
+      <button @click="router.push('/itinerary')" title="行程规划"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></button>
     </div>
 
     <div class="legend">
       <span class="legend-item"><span class="legend-dot gold"></span>取景地</span>
-      <span class="legend-item"><span class="legend-dot red"></span>已收藏</span>
-      <span class="legend-item"><span class="legend-dot red"></span>选中</span>
-      <span class="legend-item"><span class="legend-dot blue"></span>POI</span>
+      <span class="legend-item"><span class="legend-dot red"></span>已收藏/选中</span>
+      <span class="legend-item"><span class="legend-dot blue"></span>路径</span>
     </div>
   </div>
 </template>
 
 <style scoped>
 .map-page { height: 100%; position: relative; }
-.map-container { width: 100%; height: 100%; }
+.map-container { width: 100%; height: 100%; position: relative; }
 
-/* Loading */
+.map-mode-toggle {
+  position: absolute; top: 20px; left: 50%; transform: translateX(-50%); z-index: 52;
+  display: flex; gap: 0; background: rgba(255,255,255,.95); border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.08); overflow: hidden;
+}
+.map-mode-toggle button {
+  padding: 10px 20px; border: none; background: transparent; font-size: 14px;
+  font-weight: 500; cursor: pointer; transition: all .2s; color: var(--text-tertiary);
+}
+.map-mode-toggle button.active {
+  background: var(--color-primary); color: #fff;
+}
+.map-mode-toggle button:not(.active):hover { background: var(--bg-hover); }
+
 .loading-overlay {
   position: absolute; inset: 0; background: rgba(255,255,255,.85);
   z-index: 51; display: flex; align-items: center; justify-content: center;
@@ -680,12 +415,11 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { font-size: 17px; color: var(--text-tertiary); margin-top: 16px; }
 
-/* 左侧搜索面板 */
 .search-panel {
-  position: absolute; top: 20px; left: 20px; z-index: 50;
+  position: absolute; top: 80px; left: 20px; z-index: 50;
   background: rgba(255,255,255,.97); backdrop-filter: blur(12px);
   border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,.08);
-  border: 1px solid var(--border-color); padding: 18px; width: 420px;
+  border: 1px solid var(--border-color); padding: 18px; width: 380px;
   display: flex; flex-direction: column; gap: 14px;
 }
 .search-box { position: relative; display: flex; align-items: center; }
@@ -708,7 +442,7 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
 }
 .search-btn:hover { background: var(--color-primary-hover); }
 
-.loc-list { max-height: 400px; overflow-y: auto; }
+.loc-list { max-height: 360px; overflow-y: auto; }
 .loc-item {
   display: flex; align-items: center; gap: 14px; padding: 14px 16px;
   border-radius: 12px; cursor: pointer; transition: background .2s;
@@ -726,10 +460,10 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
 .loc-city { font-size: 14px; color: var(--text-tertiary); }
 .fav-icon { flex-shrink: 0; width: 16px; height: 16px; }
 
-/* 统一分析面板 */
+/* Analysis Panel */
 .analysis-panel {
   position: absolute; left: 20px; bottom: 80px; z-index: 50;
-  width: 480px; max-height: calc(100% - 160px);
+  width: 440px; max-height: calc(100% - 200px);
   background: rgba(255,255,255,.97); backdrop-filter: blur(12px);
   border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,.08);
   border: 1px solid var(--border-color);
@@ -744,13 +478,6 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
   flex-shrink: 0;
 }
 .analysis-header h3 { font-size: 18px; font-weight: 600; }
-.analysis-header-actions { display: flex; align-items: center; gap: 10px; }
-.header-action-btn {
-  width: 36px; height: 36px; border: none; background: var(--bg-page);
-  border-radius: 10px; cursor: pointer; display: flex; align-items: center;
-  justify-content: center; font-size: 18px; transition: all .2s;
-}
-.header-action-btn:hover { background: var(--color-primary-bg); }
 .panel-close-btn {
   width: 36px; height: 36px; border: none; background: var(--bg-page);
   border-radius: 10px; cursor: pointer; display: flex; align-items: center;
@@ -759,7 +486,6 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
 .panel-close-btn:hover { background: var(--color-error-bg); color: var(--color-error); }
 
 .analysis-body { flex: 1; overflow-y: auto; padding: 0; }
-
 .analysis-section { border-bottom: 1px solid var(--border-color); }
 .analysis-section:last-child { border-bottom: none; }
 
@@ -778,36 +504,14 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
 .section-arrow.open { transform: rotate(180deg); }
 
 .section-content { padding: 0 22px 20px; }
-.section-loading { font-size: 15px; color: var(--text-tertiary); text-align: center; padding: 20px 0; }
-.section-empty { font-size: 15px; color: var(--text-quaternary); text-align: center; padding: 20px 0; }
 
-/* 天气 */
-.weather-card { text-align: center; padding: 8px 0; }
-.weather-city { font-size: 15px; color: var(--text-tertiary); margin-bottom: 8px; }
-.weather-main { display: flex; align-items: baseline; justify-content: center; gap: 14px; margin-bottom: 18px; }
-.weather-temp { font-size: 60px; font-weight: 700; color: var(--text-primary); line-height: 1; }
-.weather-desc { font-size: 18px; color: var(--text-secondary); }
-.weather-details { display: flex; justify-content: center; gap: 32px; margin-bottom: 14px; }
-.weather-detail-item { text-align: center; }
-.weather-detail-item span { display: block; font-size: 13px; color: var(--text-tertiary); margin-bottom: 4px; }
-.weather-detail-item strong { font-size: 16px; color: var(--text-primary); }
-.weather-time { font-size: 13px; color: var(--text-quaternary); }
-
-/* 表单元素 */
 .field-group { margin-bottom: 16px; }
 .field-group label { display: block; font-size: 14px; color: var(--text-tertiary); font-weight: 500; margin-bottom: 6px; }
-.field-row { display: flex; gap: 10px; }
 .field-input {
-  flex: 1; padding: 12px 16px; border: 1px solid var(--border-color); border-radius: 12px;
+  width: 100%; padding: 12px 16px; border: 1px solid var(--border-color); border-radius: 12px;
   font-size: 15px; outline: none; transition: border-color .2s; box-sizing: border-box;
 }
 .field-input:focus { border-color: var(--color-primary); }
-.pick-btn {
-  width: 48px; border: 1px solid var(--border-color); border-radius: 12px;
-  background: #fff; cursor: pointer; font-size: 20px; transition: all .2s; flex-shrink: 0;
-}
-.pick-btn:hover { border-color: var(--color-primary); background: var(--color-primary-bg); }
-
 .field-select {
   width: 100%; padding: 12px 16px; border: 1px solid var(--border-color);
   border-radius: 12px; font-size: 15px; background: #fff; cursor: pointer; outline: none;
@@ -835,7 +539,6 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
 }
 .btn-ghost:hover { border-color: var(--color-error); color: var(--color-error); }
 
-/* 路径结果 */
 .route-result { margin-top: 16px; }
 .route-summary {
   display: flex; gap: 20px; flex-wrap: wrap;
@@ -843,31 +546,16 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
   border-radius: 12px; margin-bottom: 14px;
 }
 .route-stat { font-size: 15px; color: var(--color-primary); font-weight: 600; }
-.route-steps { max-height: 280px; overflow-y: auto; }
-.route-step {
-  display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid #f5f5f5;
-  font-size: 14px; line-height: 1.7;
-}
-.step-num {
-  width: 24px; height: 24px; border-radius: 50%; background: var(--color-primary-bg);
-  color: var(--color-primary); display: flex; align-items: center;
-  justify-content: center; font-size: 13px; font-weight: 600; flex-shrink: 0; margin-top: 1px;
-}
-.step-text { color: var(--text-secondary); }
-.step-more { font-size: 14px; color: var(--text-tertiary); text-align: center; padding: 12px; }
 
-/* POI 列表 */
 .poi-list { margin-top: 14px; }
 .poi-list-header { font-size: 14px; font-weight: 600; color: var(--text-secondary); margin-bottom: 12px; }
 .poi-item {
   display: flex; align-items: center; gap: 12px; padding: 10px 0;
   border-bottom: 1px solid #f5f5f5; font-size: 14px;
 }
-.poi-icon { font-size: 18px; flex-shrink: 0; }
 .poi-dot { width: 10px; height: 10px; border-radius: 50%; background: #1677ff; flex-shrink: 0; }
 .poi-info { flex: 1; min-width: 0; }
 .poi-name { font-size: 14px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.poi-addr { font-size: 13px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .poi-dist { font-size: 13px; color: var(--color-primary); font-weight: 500; white-space: nowrap; }
 .poi-route-btn {
   width: 32px; height: 32px; border: 1px solid var(--border-color); border-radius: 8px;
@@ -875,11 +563,10 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
   justify-content: center; flex-shrink: 0; transition: all .2s;
 }
 .poi-route-btn:hover { border-color: var(--color-primary); background: var(--color-primary-bg); }
-.poi-more { font-size: 13px; color: var(--text-tertiary); text-align: center; padding: 10px; }
 
-/* 详情面板 */
+/* Detail Panel */
 .detail-panel {
-  position: absolute; top: 0; right: 0; width: 520px; height: 100%;
+  position: absolute; top: 0; right: 0; width: 480px; height: 100%;
   background: #fff; border-left: 1px solid var(--border-color); z-index: 60;
   transform: translateX(100%); transition: transform .35s ease;
   display: flex; flex-direction: column; box-shadow: -4px 0 24px rgba(0,0,0,.08);
@@ -903,7 +590,8 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
   border-radius: 14px; padding: 26px; margin-bottom: 22px;
 }
 .panel-loc-name { font-size: 26px; font-weight: 700; margin-bottom: 8px; }
-.panel-loc-addr { font-size: 16px; color: var(--text-tertiary); margin-bottom: 16px; }
+.panel-loc-addr { font-size: 16px; color: var(--text-tertiary); margin-bottom: 4px; }
+.panel-coords { font-size: 13px; color: var(--text-quaternary); margin-bottom: 12px; font-family: monospace; }
 .panel-tags { display: flex; gap: 10px; flex-wrap: wrap; }
 .panel-tag { font-size: 13px; padding: 6px 16px; border-radius: 8px; background: var(--color-gold-light); color: var(--color-gold); font-weight: 500; }
 
@@ -926,7 +614,7 @@ function toggleSection(section: 'weather' | 'route' | 'buffer') {
 .btn-outline.danger { color: var(--color-error); border-color: var(--color-error-border); }
 .btn-outline.danger:hover { background: var(--color-error-bg); }
 
-/* 地图控件 */
+/* Map Controls */
 .map-controls {
   position: absolute; top: 20px; right: 20px; z-index: 49;
   display: flex; flex-direction: column; gap: 10px;

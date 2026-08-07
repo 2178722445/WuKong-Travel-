@@ -1,0 +1,22 @@
+{
+  "type": "FeatureCollection",
+  "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+  "features": [
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.1300,40.1100]},"properties":{"id":1,"name":"云冈石窟","city":"大同市","district":"云冈区","tags":["世界文化遗产","5A景区","石窟艺术"],"period":"北魏 (公元460年)","ticket":"旺季120元 / 淡季100元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.7140,39.6590]},"properties":{"id":2,"name":"悬空寺","city":"大同市","district":"浑源县","tags":["悬空建筑","儒释道三教","5A景区"],"period":"北魏太和十五年 (公元491年)","ticket":"全票115元 / 登临费100元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.1910,39.5650]},"properties":{"id":3,"name":"应县木塔","city":"朔州市","district":"应县","tags":["世界最高木塔","辽代建筑","国保"],"period":"辽清宁二年 (公元1056年)","ticket":"60元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.5890,39.0080]},"properties":{"id":4,"name":"五台山","city":"忻州市","district":"五台县","tags":["世界文化遗产","5A景区","佛教圣地"],"period":"东汉永平年间 (公元68年)","ticket":"进山费135元 / 各寺庙另收"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.1430,38.8780]},"properties":{"id":5,"name":"佛光寺","city":"忻州市","district":"五台县","tags":["唐代木构","梁思成发现","国保"],"period":"唐大中十一年 (公元857年)","ticket":"40元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.1100,38.7660]},"properties":{"id":6,"name":"南禅寺","city":"忻州市","district":"五台县","tags":["唐代木构","最古老木构","国保"],"period":"唐建中三年 (公元782年)","ticket":"20元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.2900,40.0910]},"properties":{"id":7,"name":"华严寺","city":"大同市","district":"平城区","tags":["辽代建筑","皇家寺院","国保"],"period":"辽重熙七年 (公元1038年)","ticket":"50元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.2970,40.0860]},"properties":{"id":8,"name":"善化寺","city":"大同市","district":"平城区","tags":["辽金建筑","国保"],"period":"唐开元年间 / 金代重修","ticket":"免费"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[112.4370,37.7080]},"properties":{"id":9,"name":"晋祠","city":"太原市","district":"晋源区","tags":["宋代建筑","4A景区","国保"],"period":"北宋天圣年间 (公元1023年)","ticket":"旺季80元 / 淡季65元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[112.1960,37.2010]},"properties":{"id":10,"name":"平遥古城","city":"晋中市","district":"平遥县","tags":["世界文化遗产","5A景区","古城"],"period":"西周 / 明代扩建","ticket":"通票125元 (含22个景点)"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[112.1810,37.1760]},"properties":{"id":11,"name":"双林寺","city":"晋中市","district":"平遥县","tags":["明代彩塑","国保"],"period":"北齐 / 明代重修","ticket":"35元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[112.2440,37.2820]},"properties":{"id":12,"name":"镇国寺","city":"晋中市","district":"平遥县","tags":["五代建筑","国保"],"period":"五代北汉天会七年 (公元963年)","ticket":"25元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[111.7880,36.3030]},"properties":{"id":13,"name":"广胜寺","city":"临汾市","district":"洪洞县","tags":["元代壁画","飞虹塔","国保"],"period":"东汉 / 元代重建","ticket":"55元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[110.9400,36.6900]},"properties":{"id":14,"name":"小西天(千佛庵)","city":"临汾市","district":"隰县","tags":["悬塑艺术","明代","国保"],"period":"明崇祯七年 (公元1634年)","ticket":"35元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[110.8760,34.7240]},"properties":{"id":15,"name":"永乐宫","city":"运城市","district":"芮城县","tags":["元代壁画","道教","国保"],"period":"元定宗贵由二年 (公元1247年)","ticket":"60元"}},
+    {"type":"Feature","geometry":{"type":"Point","coordinates":[113.1130,36.1950]},"properties":{"id":16,"name":"观音堂","city":"长治市","district":"潞州区","tags":["明代悬塑","国保"],"period":"明万历十年 (公元1582年)","ticket":"10元"}}
+  ]
+}

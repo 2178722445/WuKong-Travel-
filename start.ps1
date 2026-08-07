@@ -1,40 +1,41 @@
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$serverDir = Join-Path $root "server"
-$clientDir = Join-Path $root "client"
+# WuKong Travel - 启动脚本 (Windows PowerShell)
+# 启动方式: .\start.ps1
 
-Write-Host "=== 黑神话·悟空 山西取景地旅游规划 ===" -ForegroundColor Cyan
-Write-Host "" 
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  WuKong Travel - 黑神话山西取景地" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Cyan
 
-# Start server
-Push-Location $serverDir
-$serverJob = Start-Job -ScriptBlock { 
-  Set-Location $using:serverDir
-  npx tsx src/index.ts
+# 1. 启动 PostgreSQL + PostGIS (Docker)
+Write-Host "`n[1/3] 启动 PostgreSQL/PostGIS 数据库..." -ForegroundColor Green
+docker-compose up -d postgres 2>$null
+
+# 2. 初始化数据库并启动 Flask 后端
+Write-Host "`n[2/3] 启动 Flask 后端 (port 3721)..." -ForegroundColor Green
+$serverJob = Start-Job -Name "wukong-server" -ScriptBlock {
+    Set-Location $using:PWD
+    cd server
+    python -m flask db upgrade 2>$null
+    python seed.py
+    python app.py
 }
-Write-Host "[后端] 启动中 (端口 3721)..." -ForegroundColor Green
 
-# Start client
-Push-Location $clientDir
-$clientJob = Start-Job -ScriptBlock {
-  Set-Location $using:clientDir
-  npx vite --host
+# 3. 启动 Vue 前端
+Write-Host "`n[3/3] 启动 Vue 前端 (port 5173)..." -ForegroundColor Green
+$clientJob = Start-Job -Name "wukong-client" -ScriptBlock {
+    Set-Location $using:PWD
+    cd client
+    npm run dev
 }
-Write-Host "[前端] 启动中 (端口 5173)..." -ForegroundColor Green
 
-Write-Host ""
-Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host "  前端地址: http://localhost:5173" -ForegroundColor Yellow
-Write-Host "  后端地址: http://localhost:3721" -ForegroundColor Yellow
-Write-Host "  管理账号: admin / admin123" -ForegroundColor Yellow
-Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "按 Ctrl+C 停止所有服务" -ForegroundColor Gray
-
-try {
-  while ($true) { Start-Sleep -Seconds 1 }
-} finally {
-  Stop-Job $serverJob -ErrorAction SilentlyContinue
-  Stop-Job $clientJob -ErrorAction SilentlyContinue
-  Remove-Job $serverJob -ErrorAction SilentlyContinue
-  Remove-Job $clientJob -ErrorAction SilentlyContinue
-}
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "  启动完成!" -ForegroundColor Yellow
+Write-Host "  前端: http://localhost:5173" -ForegroundColor White
+Write-Host "  后端: http://localhost:3721" -ForegroundColor White
+Write-Host "  API文档: http://localhost:3721/api/health" -ForegroundColor White
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "`n按任意键停止服务..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Stop-Job -Name "wukong-server"
+Stop-Job -Name "wukong-client"
+Remove-Job -Name "wukong-server","wukong-client" -Force 2>$null
+Write-Host "服务已停止" -ForegroundColor Red

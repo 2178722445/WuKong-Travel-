@@ -1,6 +1,23 @@
 version: '3.8'
 
 services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: wukong_travel
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   server:
     build:
       context: ./server
@@ -8,11 +25,13 @@ services:
     ports:
       - "3721:3721"
     environment:
-      - DATABASE_URL=file:/app/prisma/dev.db
-      - JWT_SECRET=wukong-travel-secret-key-2026
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/wukong_travel
+      - SECRET_KEY=wukong-travel-secret-key-2026
       - PORT=3721
-    volumes:
-      - server_data:/app/prisma
+      - CORS_ORIGINS=http://localhost:5173
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   client:
@@ -28,4 +47,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  server_data:
+  pgdata:

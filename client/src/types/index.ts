@@ -64,3 +64,18 @@ export interface DashboardStats {
   topLocations: { id: number; name: string; city: string; viewCount: number }[]
   recentUsers: { id: number; username: string; createdAt: string }[]
 }
+
+export interface SpatialPathResult {
+  path: { id: number; name: string; lng: number; lat: number }[]
+  distance_m: number
+  distance_km: number
+  total_locations: number
+}
+
+export interface BufferResult {
+  center: { lng: number; lat: number }
+  radius_m: number
+  radius_km: number
+  geometry: any
+  locations_in_buffer: { id: number; name: string; lng: number; lat: number; distance_m: number; distance_km: number }[]
+}
