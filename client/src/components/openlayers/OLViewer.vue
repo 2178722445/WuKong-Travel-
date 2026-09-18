@@ -5,7 +5,6 @@ import View from 'ol/View.js'
 import TileLayer from 'ol/layer/Tile.js'
 import VectorLayer from 'ol/layer/Vector.js'
 import VectorSource from 'ol/source/Vector.js'
-import OSM from 'ol/source/OSM.js'
 import XYZ from 'ol/source/XYZ.js'
 import { fromLonLat, toLonLat, transform } from 'ol/proj.js'
 import { defaults as defaultControls } from 'ol/control.js'
@@ -26,6 +25,8 @@ const props = defineProps<{
   selectedLocationId: number | null
   routePath?: { lng: number; lat: number }[]
   bufferGeometry?: any
+  showLayerSwitcher?: boolean
+  baseMode?: '2d' | 'satellite'
 }>()
 
 const emit = defineEmits<{
@@ -34,7 +35,7 @@ const emit = defineEmits<{
 }>()
 
 const container = ref<HTMLDivElement>()
-let map: Map
+let map!: Map
 let markerLayer: VectorLayer<VectorSource>
 let routeLayer: VectorLayer<VectorSource>
 let bufferLayer: VectorLayer<VectorSource>
@@ -47,6 +48,8 @@ onMounted(() => {
   if (!container.value) return
   initMap()
   addMarkers()
+  if (props.routePath?.length) drawRoute(props.routePath)
+  if (props.bufferGeometry) drawBuffer(props.bufferGeometry)
 })
 
 onUnmounted(() => {
@@ -65,25 +68,56 @@ watch(() => props.bufferGeometry, (geom) => {
   bufferLayer.getSource()?.clear()
   if (geom) drawBuffer(geom)
 })
+watch(() => props.baseMode, (mode) => {
+  if (mode) switchBaseLayer(mode)
+})
 
 function initMap() {
-  const osmLayer = new TileLayer({ source: new OSM(), visible: true, zIndex: 0 })
+  // 底图统一走天地图：高德 webrd/style=7 直连瓦片会被浏览器 ORB 拦截（ERR_BLOCKED_BY_ORB）导致底图全白
+  const tk = import.meta.env.VITE_TIANDITU_KEY
+  const tdtUrls = (type: string) =>
+    [0, 1, 2, 3, 4, 5, 6, 7].map(
+      i => `https://t${i}.tianditu.gov.cn/DataServer?T=${type}&x={x}&y={y}&l={z}${tk ? `&tk=${tk}` : ''}`,
+    )
+
+  const streetLayer = new TileLayer({
+    source: new XYZ({
+      urls: tdtUrls('vec_w'),
+      attributions: '© 天地图',
+      maxZoom: 18,
+    }),
+    visible: true,
+    zIndex: 0,
+  })
+  const streetLabelLayer = new TileLayer({
+    source: new XYZ({
+      urls: tdtUrls('cva_w'),
+      attributions: '© 天地图',
+      maxZoom: 18,
+    }),
+    visible: true,
+    zIndex: 1,
+  })
   const satelliteLayer = new TileLayer({
     source: new XYZ({
-      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      maxZoom: 19,
+      urls: tdtUrls('img_w'),
+      attributions: '© 天地图',
+      maxZoom: 18,
     }),
     visible: false,
     zIndex: 0,
   })
-  const labelLayer = new TileLayer({
+  const satelliteLabelLayer = new TileLayer({
     source: new XYZ({
-      url: 'https://mt1.google.com/vt/lyrs=h&x={x}&y={y}&z={z}',
-      maxZoom: 19,
+      urls: tdtUrls('cia_w'),
+      attributions: '© 天地图',
+      maxZoom: 18,
     }),
     visible: false,
     zIndex: 1,
   })
+  baseLayers.value = { osm: streetLayer, osmLabel: streetLabelLayer, satellite: satelliteLayer, satelliteLabel: satelliteLabelLayer }
+  switchBaseLayer(props.baseMode ?? '2d')
 
   markerLayer = new VectorLayer({ source: new VectorSource(), zIndex: 10 })
   routeLayer = new VectorLayer({ source: new VectorSource(), zIndex: 9 })
@@ -97,7 +131,7 @@ function initMap() {
 
   map = new Map({
     target: container.value,
-    layers: [osmLayer, satelliteLayer, labelLayer, bufferLayer, routeLayer, markerLayer],
+    layers: [streetLayer, streetLabelLayer, satelliteLayer, satelliteLabelLayer, bufferLayer, routeLayer, markerLayer],
     overlays: [popupOverlay],
     view: new View({
       center: fromLonLat([112.0, 37.0]),
@@ -105,7 +139,7 @@ function initMap() {
       maxZoom: 18,
       minZoom: 5,
     }),
-    controls: defaultControls({ attribution: false, zoom: false, rotate: false }),
+    controls: defaultControls({ zoom: false, rotate: false }),
     interactions: defaultInteractions({ doubleClickZoom: false }),
   })
 
@@ -116,6 +150,14 @@ function initMap() {
       if (locId) emit('select-location', locId as number)
     }
   })
+}
+
+function switchBaseLayer(mode: '2d' | 'satellite') {
+  viewMode.value = mode
+  baseLayers.value.osm?.setVisible(mode === '2d')
+  baseLayers.value.osmLabel?.setVisible(mode === '2d')
+  baseLayers.value.satellite?.setVisible(mode === 'satellite')
+  baseLayers.value.satelliteLabel?.setVisible(mode === 'satellite')
 }
 
 function getMarkerStyle(loc: Location, isSelected: boolean) {
@@ -149,7 +191,7 @@ function addMarkers() {
   })
   if (props.locations.length > 0) {
     const extent = source.getExtent()
-    map.getView().fit(extentBuffer(extent, 50000))
+    if (extent) map.getView().fit(extentBuffer(extent, 50000))
   }
 }
 
@@ -198,7 +240,7 @@ function drawRoute(path: { lng: number; lat: number }[]) {
   })
 
   const extent = routeLayer.getSource()!.getExtent()
-  map.getView().fit(extentBuffer(extent, 80000))
+  if (extent) map.getView().fit(extentBuffer(extent, 80000))
 }
 
 function drawBuffer(geom: any) {
@@ -220,6 +262,10 @@ defineExpose({ map })
 <template>
   <div class="ol-container">
     <div ref="container" class="ol-map"></div>
+    <div v-if="props.showLayerSwitcher" class="layer-switcher" aria-label="地图图层">
+      <button :class="{ active: viewMode === '2d' }" @click="switchBaseLayer('2d')">地图</button>
+      <button :class="{ active: viewMode === 'satellite' }" @click="switchBaseLayer('satellite')">卫星</button>
+    </div>
   </div>
 </template>
 
@@ -232,5 +278,27 @@ defineExpose({ map })
 .ol-map {
   width: 100%;
   height: 100%;
+}
+.layer-switcher {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  padding: 3px;
+  background: rgba(20, 18, 14, 0.9);
+  border: 1px solid rgba(218, 197, 156, 0.45);
+}
+.layer-switcher button {
+  min-width: 52px;
+  height: 30px;
+  border: 0;
+  background: transparent;
+  color: #c8bda9;
+  cursor: pointer;
+}
+.layer-switcher button.active {
+  background: #b58d4f;
+  color: #17130d;
 }
 </style>

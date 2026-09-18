@@ -50,7 +50,7 @@ export function findPointsInBuffer(
   lat: number,
   radiusMeters: number,
   locations: LocationFeature[]
-): LocationFeature[] {
+): (LocationFeature & { distance: number })[] {
   const buffer = createBuffer(lng, lat, radiusMeters)
   const points = featureCollection(locations.map(l => turfPoint([l.lng, l.lat], { id: l.id, name: l.name })))
   return pointsWithinPolygon(points, buffer).features.map(f => {
@@ -58,9 +58,9 @@ export function findPointsInBuffer(
     return {
       id: props.id as number,
       name: props.name as string,
-      lng: f.geometry.coordinates[0],
-      lat: f.geometry.coordinates[1],
-      distance: distanceBetween(lng, lat, f.geometry.coordinates[0], f.geometry.coordinates[1]),
+      lng: f.geometry.coordinates[0] as number,
+      lat: f.geometry.coordinates[1] as number,
+      distance: distanceBetween(lng, lat, f.geometry.coordinates[0] as number, f.geometry.coordinates[1] as number),
     } as LocationFeature & { distance: number }
   }).sort((a, b) => a.distance - b.distance)
 }

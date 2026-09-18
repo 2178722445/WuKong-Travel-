@@ -22,9 +22,9 @@ const toast = useToast()
 const selectedIdx = ref<number | null>(null)
 const searchQuery = ref('')
 const cityFilter = ref('')
-const showPanel = ref(true)
+const showPanel = ref(window.innerWidth > 760)
 const isLoading = ref(true)
-const mapMode = ref<'2d' | '3d'>('3d')
+const mapMode = ref<'2d' | '3d'>('2d')
 
 // Spatial analysis
 const bufferRadius = ref(5000)
@@ -78,13 +78,13 @@ onMounted(async () => {
   isLoading.value = false
 })
 
-function selectLocation(idx: number) {
-  selectedIdx.value = idx
+function selectLocation(id: number) {
+  selectedIdx.value = locStore.locations.findIndex(item => item.id === id)
 }
 
 function onMarkerSelect(id: number) {
   const idx = locStore.locations.findIndex(l => l.id === id)
-  if (idx >= 0) selectLocation(idx)
+  if (idx >= 0) selectLocation(id)
 }
 
 function onViewDetail(id: number) {
@@ -118,9 +118,10 @@ function drawBuffer() {
     toast.info('请先选择一个取景地作为缓冲区中心')
     return
   }
-  clearBuffer()
   const center = locStore.locations.find(l => l.id === bufferCenterId.value)
   if (!center) return
+
+  bufferPOIs.value = []
 
   const locationFeatures: LocationFeature[] = locStore.locations
     .filter(l => l.id !== bufferCenterId.value)
@@ -223,9 +224,9 @@ function toggleSection(section: 'route' | 'buffer') {
         <div
           v-for="(loc, i) in filteredLocations"
           :key="loc.id"
-          @click="selectLocation(i)"
+          @click="selectLocation(loc.id)"
           class="loc-item"
-          :class="{ active: selectedIdx === i }"
+          :class="{ active: selectedLocation?.id === loc.id }"
         >
           <span class="loc-num" :class="{ fav: locStore.favorites.includes(loc.id) }">{{ i + 1 }}</span>
           <div class="loc-info">
