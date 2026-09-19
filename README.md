@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <h1 align="center">WuKong Travel · 黑神话山西取景地旅游规划平台</h1>
+  <h1 align="center">WuKong Travel · 黑神话山西行摄地图</h1>
   <p align="center">一个面向 <b>WebGIS 岗位</b> 的全栈项目</p>
   <p align="center">Vue 3 + CesiumJS / OpenLayers + Turf.js + Flask + PostgreSQL/PostGIS</p>
 </p>
@@ -19,20 +19,21 @@
 
 ## 关于本项目
 
-以《黑神话：悟空》在山西的 16 个取景地为主题，构建集 **3D 地形可视化、空间分析、路径规划、缓冲区分析、旅游规划** 于一体的全栈 WebGIS 平台。
+以《黑神话：悟空》在山西的 **27 处**取景地为线索的出行工具站：**取景地信息总表**（开放时间 / 门票 / 预约 / 拍摄规定 / 闭馆日，出发前防白跑）、**现场参观顺序与游戏画面结构对照**，以及 **光影机位**（CesiumJS 参数化建筑体量 + 日照阴影模拟 + 机位视线通廊分析）。2D 地图用 OpenLayers，3D 用 CesiumJS，空间分析用 Turf.js，后端 Flask + PostgreSQL/PostGIS。
 
 ---
 
 ## 项目展示
 
-| | |
+| 首页 · 27 处取景地总表（矢量地图） | 首页 · 卫星影像模式 |
 |:---:|:---:|
-| **主页面** | **缓冲区分析** |
-| ![主页面](client/public/screenshots/home.png) | ![缓冲区分析](client/public/screenshots/buffer.png) |
-| **路径规划** | **3D 地形** |
-| ![路径规划](client/public/screenshots/route.png) | |
-| **行程规划** | |
-| ![行程规划](client/public/screenshots/itinerary.png) | |
+| ![首页总表](visual/首页选点.png) | ![首页卫星](visual/首页卫星.png) |
+| **首页 · 3D 地形图层** | **出发前看 · 开放/门票/预约/拍摄信息核对** |
+| ![首页3D](visual/首页3d图层.png) | ![出发信息核对](visual/出发信息核对.png) |
+| **怎么逛 · 应县木塔参观顺序** | **游戏对照 · 轮廓与结构讲解** |
+| ![参观顺序](visual/应县木塔参观顺序.png) | ![游戏对照](visual/游戏对照与结构讲解.png) |
+| **光影机位 · 09:30 木塔阴影与机位总览** | **光影机位 · 15:30 顺光机位视线通廊** |
+| ![光影机位总览](visual/光影九点半时刻机位总览（重要）.png) | ![光影视线通廊](visual/光影十五点半顺光位西南环塔步道机位（重要）.png) |
 
 ---
 
